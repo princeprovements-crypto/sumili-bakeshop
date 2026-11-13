@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sumili Owner Dashboard</title><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><style>
+body{font:15px system-ui;margin:0;background:#f3f6f1;color:#17211b}header{background:#14532d;color:white;padding:18px}main{max-width:1000px;margin:18px auto;padding:0 12px}.card{background:white;border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:14px}input,select{box-sizing:border-box;width:100%;padding:9px;border:1px solid #bbb;border-radius:7px;margin:4px 0}button{padding:9px 13px;border:0;border-radius:7px;background:#166534;color:white;font-weight:bold;margin:5px 0}table{border-collapse:collapse;width:100%;min-width:700px}td,th{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}.wrap{overflow:auto}.muted{color:#68736b;font-size:13px}.msg{background:#eef6ee;padding:10px;border-radius:7px;white-space:pre-wrap}.err{background:#fee2e2;color:#991b1b}.hidden{display:none}#app{display:none}
+</style></head><body><header><h2>🌾 Sumili Bakeshop</h2>Owner Dashboard · Inventory & Pricing</header><main>
+<section id="login" class="card"><h3>Owner sign in</h3><label>Email</label><input id="email" type="email"><label>Password</label><input id="pw" type="password"><button id="signin">Sign in</button><div id="loginmsg"></div></section>
+<div id="app"><section class="card"><h3>Inventory overview</h3><div id="branch" class="muted"></div><button id="refresh">Refresh</button><button id="logout">Sign out</button><div id="msg"></div></section>
+<section class="card"><h3>Products & stock</h3><p class="muted">Pilot price: ₱5.00 each. Confirm with the bakery owner before live use.</p><div class="wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Change price</th><th>Stock movement</th></tr></thead><tbody id="rows"></tbody></table></div></section>
+<section class="card"><h3>Low stock (10 or fewer)</h3><div id="low"></div></section></div></main>
+<script>
+const sb=window.supabase.createClient("https://felgyywaanihbyarpxqf.supabase.co","sb_publishable_0jPVsreN302WUn35kwpIZA_XY6nGrL0");
+let org=null,branchId=null;
+const $=x=>document.getElementById(x);
+function message(t,bad=false){$("msg").className="msg"+(bad?" err":"");$("msg").textContent=t}
+$("signin").onclick=async()=>{let r=await sb.auth.signInWithPassword({email:$("email").value.trim(),password:$("pw").value});if(r.error){$("loginmsg").textContent=r.error.message;return}$("login").classList.add("hidden");$("app").style.display="block";await start()};
+$("logout").onclick=async()=>{await sb.auth.signOut();$("app").style.display="none";$("login").classList.remove("hidden")};
+$("refresh").onclick=load;
+async function start(){
+let u=await sb.auth.getUser();if(u.error||!u.data.user)return message("Please sign in again.",true);
+let m=await sb.from("organization_members").select("organization_id,role").eq("user_id",u.data.user.id);
+if(m.error)return message(m.error.message,true);
+let own=(m.data||[]).find(x=>["owner","admin"].includes(x.role));if(!own)return message("No owner/admin membership found for this account.",true);org=own.organization_id;
+let b=await sb.from("branches").select("id,name,branch_code").eq("organization_id",org).eq("branch_code","MAIN").limit(1).maybeSingle();
+if(b.error||!b.data)return message("Main Branch not found: "+(b.error?.message||""),true);branchId=b.data.id;$("branch").textContent=b.data.name+" · "+b.data.branch_code;await load()}
+async function load(){
+if(!org)return;let p=await sb.from("products").select("id,name,category,unit,base_price").eq("organization_id",org).order("name");if(p.error)return message(p.error.message,true);
+let i=await sb.from("branch_inventory").select("product_id,quantity_on_hand").eq("branch_id",branchId);if(i.error)return message(i.error.message,true);
+let stocks=new Map((i.data||[]).map(x=>[x.product_id,x.quantity_on_hand]));let products=(p.data||[]).map(x=>({...x,stock:stocks.get(x.id)??0}));
+$("rows").innerHTML=products.map(x=>`<tr><td><b>${x.name}</b></td><td>₱${Number(x.base_price).toFixed(2)}</td><td>${x.stock}</td><td><input id="p${x.id}" type="number" min="0" step=".01" value="${Number(x.base_price).toFixed(2)}"><button onclick="price('${x.id}')">Save price</button></td><td><input id="q${x.id}" type="number" placeholder="+/- qty"><select id="t${x.id}"><option value="restock">Restock (+)</option><option value="adjustment">Adjustment (+/-)</option><option value="waste">Waste (-)</option></select><button onclick="stock('${x.id}')">Update stock</button></td></tr>`).join("");
+let low=products.filter(x=>x.stock<=10);$("low").innerHTML=low.map(x=>`${x.name} — ${x.stock} left`).join("<br>")||"No low-stock items."}
+window.price=async id=>{let v=Number($("p"+id).value);if(!Number.isFinite(v)||v<0)return message("Invalid price.",true);let r=await sb.rpc("owner_set_product_price",{p_product_id:id,p_new_price:v});if(r.error)return message(r.error.message,true);message("Price updated.");await load()};
+window.stock=async id=>{let q=Number($("q"+id).value),t=$("t"+id).value;if(!Number.isInteger(q)||q===0)return message("Enter a non-zero whole number.",true);if((t==="restock"&&q<0)||(t==="waste"&&q>0))return message("Check the quantity sign.",true);let r=await sb.rpc("owner_adjust_branch_stock",{p_branch_id:branchId,p_product_id:id,p_quantity_change:q,p_movement_type:t,p_notes:"Updated via Sumili Owner Dashboard"});if(r.error)return message(r.error.message,true);message("Stock updated and movement recorded.");await load()};
+(async()=>{let s=await sb.auth.getSession();if(s.data.session){$("login").classList.add("hidden");$("app").style.display="block";await start()}})();
+</script></body></html>
